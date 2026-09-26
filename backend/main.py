@@ -60,7 +60,10 @@ def analyze_risk(activity_type: str, details: str):
         "malware",
         "phishing",
         "steal",
-        "password"
+        "password",
+        "failed login",
+        "multiple failed login",
+        "brute force"
     ]
 
     medium_risk_words = [
@@ -71,13 +74,22 @@ def analyze_risk(activity_type: str, details: str):
     ]
 
     if any(word in text for word in high_risk_words):
-        return "High", "Potentially harmful or security-related activity detected."
+        return (
+            "High",
+            "Potentially harmful or security-related activity detected."
+        )
 
     elif any(word in text for word in medium_risk_words):
-        return "Medium", "Activity contains potentially suspicious keywords."
+        return (
+            "Medium",
+            "Activity contains potentially suspicious keywords."
+        )
 
     else:
-        return "Low", "No suspicious pattern detected."
+        return (
+            "Low",
+            "No suspicious pattern detected."
+        )
 
 
 # -----------------------------
@@ -157,7 +169,11 @@ def get_activities(
             "activity_type": activity.activity_type,
             "details": activity.details,
             "time": activity.time,
-            "risk_level": activity.risk_level
+            "risk_level": activity.risk_level,
+            "reason": analyze_risk(
+                activity.activity_type,
+                activity.details
+            )[1]
         }
         for activity in activities
     ]

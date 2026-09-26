@@ -1,0 +1,8 @@
+
+# Python files
+.venv/
+__pycache__/
+*.pyc
+
+# Database
+sentinelx.db
