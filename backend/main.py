@@ -1,36 +1,99 @@
-from fastapi import FastAPI, Depends
+
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from datetime import datetime
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
-from .database import SessionLocal, Base, engine, ActivityDB
+
+# --------------------------------------------------
+# DATABASE CONFIGURATION
+# --------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATABASE_URL = f"sqlite:///{BASE_DIR / 'sentinelx.db'}"
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
+
+Base = declarative_base()
+
+
+# --------------------------------------------------
+# DATABASE MODEL
+# --------------------------------------------------
+
+class Activity(Base):
+    __tablename__ = "activities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user = Column(String, nullable=False)
+    activity_type = Column(String, nullable=False)
+    details = Column(Text, nullable=False)
+    risk_level = Column(String, default="Low", nullable=False)
+    time = Column(String, nullable=False)
 
 
 Base.metadata.create_all(bind=engine)
 
 
+# --------------------------------------------------
+# REQUEST SCHEMA
+# --------------------------------------------------
+
+class ActivityCreate(BaseModel):
+    user: str
+    activity_type: str
+    details: str
+
+
+# --------------------------------------------------
+# FASTAPI APPLICATION
+# --------------------------------------------------
+
 app = FastAPI(
     title="SentinelX AI",
-    version="0.1.0"
+    description="Activity Monitoring and Risk Analysis API",
+    version="1.0.0",
 )
 
-
-# -----------------------------
-# CORS
-# -----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# -----------------------------
-# Database
-# -----------------------------
+# --------------------------------------------------
+# DATABASE SESSION
+# --------------------------------------------------
+
 def get_db():
     db = SessionLocal()
     try:
@@ -39,62 +102,10 @@ def get_db():
         db.close()
 
 
-# -----------------------------
-# Activity Request Model
-# -----------------------------
-class Activity(BaseModel):
-    user: str
-    activity_type: str
-    details: str
+# --------------------------------------------------
+# BASIC ROUTES
+# --------------------------------------------------
 
-
-# -----------------------------
-# Risk Analyzer
-# -----------------------------
-def analyze_risk(activity_type: str, details: str):
-
-    text = (activity_type + " " + details).lower()
-
-    high_risk_words = [
-        "hack",
-        "malware",
-        "phishing",
-        "steal",
-        "password",
-        "failed login",
-        "multiple failed login",
-        "brute force"
-    ]
-
-    medium_risk_words = [
-        "suspicious",
-        "unknown",
-        "bypass",
-        "proxy"
-    ]
-
-    if any(word in text for word in high_risk_words):
-        return (
-            "High",
-            "Potentially harmful or security-related activity detected."
-        )
-
-    elif any(word in text for word in medium_risk_words):
-        return (
-            "Medium",
-            "Activity contains potentially suspicious keywords."
-        )
-
-    else:
-        return (
-            "Low",
-            "No suspicious pattern detected."
-        )
-
-
-# -----------------------------
-# Home
-# -----------------------------
 @app.get("/")
 def home():
     return {
@@ -102,143 +113,173 @@ def home():
     }
 
 
-# -----------------------------
-# Health Check
-# -----------------------------
 @app.get("/health")
 def health():
     return {
-        "status": "healthy"
+        "status": "healthy",
+        "service": "SentinelX AI Backend",
     }
 
 
-# -----------------------------
-# Add Activity
-# -----------------------------
-@app.post("/activities")
+# --------------------------------------------------
+# RISK ANALYSIS
+# --------------------------------------------------
+
+def analyze_risk(activity_type: str, details: str):
+    text = f"{activity_type} {details}".lower()
+
+    high_keywords = [
+        "unauthorized",
+        "data breach",
+        "malware",
+        "multiple failed login",
+        "suspicious access",
+        "privilege escalation",
+    ]
+
+    medium_keywords = [
+        "failed login",
+        "password change",
+        "unusual login",
+        "unknown device",
+        "access denied",
+    ]
+
+    if any(word in text for word in high_keywords):
+        return "High"
+
+    if any(word in text for word in medium_keywords):
+        return "Medium"
+
+    return "Low"
+
+
+# --------------------------------------------------
+# GET ALL ACTIVITIES
+# --------------------------------------------------
+
+@app.get("/activities")
+def get_activities(db: Session = Depends(get_db)):
+    try:
+        activities = (
+            db.query(Activity)
+            .order_by(Activity.id.desc())
+            .all()
+        )
+
+        return [
+            {
+                "id": item.id,
+                "user": item.user,
+                "activity_type": item.activity_type,
+                "details": item.details,
+                "risk_level": item.risk_level,
+                "time": item.time,
+            }
+            for item in activities
+        ]
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch activities",
+        ) from exc
+
+
+# --------------------------------------------------
+# ADD NEW ACTIVITY
+# --------------------------------------------------
+
+@app.post("/activities", status_code=201)
 def add_activity(
-    activity: Activity,
-    db: Session = Depends(get_db)
+    activity: ActivityCreate,
+    db: Session = Depends(get_db),
 ):
+    if not activity.user.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="User cannot be empty",
+        )
 
-    risk_level, reason = analyze_risk(
+    if not activity.activity_type.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Activity type cannot be empty",
+        )
+
+    if not activity.details.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Details cannot be empty",
+        )
+
+    risk_level = analyze_risk(
         activity.activity_type,
-        activity.details
+        activity.details,
     )
 
-    new_activity = ActivityDB(
-        user=activity.user,
-        activity_type=activity.activity_type,
-        details=activity.details,
-        time=datetime.now().isoformat(),
-        risk_level=risk_level
+    new_activity = Activity(
+        user=activity.user.strip(),
+        activity_type=activity.activity_type.strip(),
+        details=activity.details.strip(),
+        risk_level=risk_level,
+        time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
 
-    db.add(new_activity)
-    db.commit()
-    db.refresh(new_activity)
+    try:
+        db.add(new_activity)
+        db.commit()
+        db.refresh(new_activity)
 
-    return {
-        "message": "Activity saved successfully",
-        "data": {
+        return {
             "id": new_activity.id,
             "user": new_activity.user,
             "activity_type": new_activity.activity_type,
             "details": new_activity.details,
-            "time": new_activity.time,
             "risk_level": new_activity.risk_level,
-            "reason": reason
+            "time": new_activity.time,
         }
-    }
+
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save activity",
+        ) from exc
 
 
-# -----------------------------
-# Get All Activities
-# -----------------------------
-@app.get("/activities")
-def get_activities(
-    db: Session = Depends(get_db)
+# --------------------------------------------------
+# DELETE ACTIVITY
+# --------------------------------------------------
+
+@app.delete("/activities/{activity_id}")
+def delete_activity(
+    activity_id: int,
+    db: Session = Depends(get_db),
 ):
+    activity = (
+        db.query(Activity)
+        .filter(Activity.id == activity_id)
+        .first()
+    )
 
-    activities = db.query(ActivityDB).all()
+    if activity is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Activity not found",
+        )
 
-    return [
-        {
-            "id": activity.id,
-            "user": activity.user,
-            "activity_type": activity.activity_type,
-            "details": activity.details,
-            "time": activity.time,
-            "risk_level": activity.risk_level,
-            "reason": analyze_risk(
-                activity.activity_type,
-                activity.details
-            )[1]
+    try:
+        db.delete(activity)
+        db.commit()
+
+        return {
+            "message": "Activity deleted successfully"
         }
-        for activity in activities
-    ]
 
-
-# -----------------------------
-# Risk Analysis
-# -----------------------------
-@app.get("/risk-analysis")
-def risk_analysis(
-    activity_type: str,
-    details: str
-):
-
-    risk_level, reason = analyze_risk(
-        activity_type,
-        details
-    )
-
-    return {
-        "activity_type": activity_type,
-        "details": details,
-        "risk_level": risk_level,
-        "reason": reason
-    }
-
-
-# -----------------------------
-# Dashboard Summary
-# -----------------------------
-@app.get("/dashboard-summary")
-def dashboard_summary(
-    db: Session = Depends(get_db)
-):
-
-    activities = db.query(ActivityDB).all()
-
-    total_activities = len(activities)
-
-    low_risk = sum(
-        1 for activity in activities
-        if activity.risk_level == "Low"
-    )
-
-    medium_risk = sum(
-        1 for activity in activities
-        if activity.risk_level == "Medium"
-    )
-
-    high_risk = sum(
-        1 for activity in activities
-        if activity.risk_level == "High"
-    )
-
-    if high_risk > 0:
-        overall_risk = "High"
-    elif medium_risk > 0:
-        overall_risk = "Medium"
-    else:
-        overall_risk = "Low"
-
-    return {
-        "total_activities": total_activities,
-        "low_risk": low_risk,
-        "medium_risk": medium_risk,
-        "high_risk": high_risk,
-        "overall_risk": overall_risk
-    }
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to delete activity",
+        ) from exc
